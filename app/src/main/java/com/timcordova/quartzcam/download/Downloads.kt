@@ -126,8 +126,12 @@ object Downloads {
     }
 
     /**
-     * Saves one clip; runs on a background thread. The camera's Wi-Fi drops out now and then, so a failed transfer
-     * is retried a few times, picking up where it stopped when the camera allows it.
+     * Saves one clip; runs on a background thread.
+     *
+     * The camera's web server cuts long transfers off after a while, so the clip is fetched in pieces (HTTP range
+     * requests), each on its own short connection. When a piece is cut off, it carries on from the last byte saved.
+     * It only gives up after several tries in a row that get nowhere. Cameras that can't send pieces get the whole
+     * file in one go, with a few full retries.
      */
     internal fun download(context: Context, job: DownloadJob, onProgress: () -> Unit) {
         val f = job.file
@@ -148,33 +152,48 @@ object Downloads {
         cancelled = null
         set(f.path) { it.copy(state = JobState.RUNNING, bytes = 0, error = null) }
         var done = 0L
-        var total = f.sizeBytes
+        var total = -1L
+        /** Null until the camera's first answer shows whether it can send pieces. */
+        var pieces: Boolean? = null
+        var stuck = 0
+        var wholeTries = 0
         var lastUpdate = 0L
         try {
-            var lastError: String? = null
-            for (attempt in 1..ATTEMPTS) {
-                if (cancelled == f.path) throw CancelledDownload()
-                try {
-                    val c = URL(CamApi.fileUrl(f)).openConnection() as HttpURLConnection
-                    c.connectTimeout = 10_000
-                    c.readTimeout = 30_000
-                    // A fresh connection each time, no compression: the camera's little web server copes best with that
-                    c.setRequestProperty("Connection", "close")
-                    c.setRequestProperty("Accept-Encoding", "identity")
-                    if (done > 0) c.setRequestProperty("Range", "bytes=$done-")
-                    try {
-                        val code = c.responseCode
-                        if (code != 200 && code != 206) throw IOException("the camera answered $code")
-                        val resumed = code == 206 && done > 0
-                        if (!resumed) done = 0
-                        val len = c.contentLengthLong
-                        if (len > 0) total = if (resumed) done + len else len
-                        val t = total
-                        set(f.path) { it.copy(total = t, bytes = done, error = null) }
-                        resolver.openFileDescriptor(uri, "rw")!!.use { pfd ->
-                            FileOutputStream(pfd.fileDescriptor).use { out ->
-                                // Carry on after what's already saved, or start the file over
-                                if (resumed) out.channel.position(done) else out.channel.truncate(0)
+            resolver.openFileDescriptor(uri, "rw")!!.use { pfd ->
+                FileOutputStream(pfd.fileDescriptor).use { out ->
+                    while (total < 0 || done < total) {
+                        if (cancelled == f.path) throw CancelledDownload()
+                        val before = done
+                        try {
+                            val c = URL(CamApi.fileUrl(f)).openConnection() as HttpURLConnection
+                            c.connectTimeout = 10_000
+                            c.readTimeout = 20_000
+                            // A fresh connection each time, no compression: the camera's little server copes best with that
+                            c.setRequestProperty("Connection", "close")
+                            c.setRequestProperty("Accept-Encoding", "identity")
+                            if (pieces != false) c.setRequestProperty("Range", "bytes=$done-${done + PIECE - 1}")
+                            try {
+                                when (val code = c.responseCode) {
+                                    206 -> {
+                                        pieces = true
+                                        // "bytes 0-25165823/912345678": the number after the slash is the whole file
+                                        c.getHeaderField("Content-Range")?.substringAfter('/')?.trim()?.toLongOrNull()?.let { total = it }
+                                    }
+                                    200 -> {
+                                        // No pieces: the whole file, from the start
+                                        pieces = false
+                                        wholeTries++
+                                        done = 0
+                                        out.channel.truncate(0)
+                                        c.contentLengthLong.takeIf { it > 0 }?.let { total = it }
+                                    }
+                                    416 -> if (total > 0 && done >= total) break else throw IOException("the camera answered 416")
+                                    else -> throw IOException("the camera answered $code")
+                                }
+                                if (total <= 0) total = f.sizeBytes
+                                val t = total
+                                set(f.path) { it.copy(total = t) }
+                                out.channel.position(done)
                                 c.inputStream.use { input ->
                                     val buf = ByteArray(256 * 1024)
                                     while (true) {
@@ -187,30 +206,34 @@ object Downloads {
                                         if (now - lastUpdate > 400) {
                                             lastUpdate = now
                                             val d = done
-                                            set(f.path) { it.copy(bytes = d) }
+                                            set(f.path) { it.copy(bytes = d, error = null) }
                                             onProgress()
                                         }
                                     }
                                 }
+                            } finally {
+                                c.disconnect()
                             }
+                            if (pieces == false && done < total) throw IOException("the connection dropped")
+                            if (done > before) stuck = 0
+                        } catch (e: IOException) {
+                            // Cut off: fine as long as it's still getting somewhere
+                            if (done > before && pieces != false) stuck = 0 else stuck++
+                            val reason = e.message ?: e.javaClass.simpleName
+                            val reached = if (total > 0) " at ${done * 100 / total}%" else ""
+                            val gaveUp = if (pieces == false) wholeTries >= WHOLE_TRIES else stuck >= STUCK_TRIES
+                            if (gaveUp) {
+                                val note = if (pieces == false) " (this camera can't resume downloads)" else ""
+                                throw IOException("$reason$reached$note")
+                            }
+                            set(f.path) { it.copy(bytes = done, error = "reconnecting") }
+                            onProgress()
+                            Thread.sleep(if (stuck == 0) 300L else 1500L * stuck)
                         }
-                    } finally {
-                        c.disconnect()
                     }
-                    if (total > 0 && done < total) throw IOException("the connection dropped")
-                    lastError = null
-                    break
-                } catch (e: IOException) {
-                    val reached = if (total > 0) " at ${done * 100 / total}%" else ""
-                    lastError = (e.message ?: e.javaClass.simpleName) + reached
-                    if (attempt < ATTEMPTS) {
-                        val msg = lastError
-                        set(f.path) { it.copy(error = "Retrying ($msg)") }
-                        Thread.sleep(2000L * attempt)
-                    }
+                    out.flush()
                 }
             }
-            if (lastError != null) throw IOException(lastError)
             val ready = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
             resolver.update(uri, ready, null, null)
             markSaved(f.name)
@@ -228,13 +251,20 @@ object Downloads {
         }
     }
 
+    /** Bytes asked for per request: 16 MB, a few seconds over the camera's Wi-Fi. */
+    private const val PIECE = 16L * 1024 * 1024
+
+    /** Give up after this many tries in a row that save nothing new. */
+    private const val STUCK_TRIES = 6
+
+    /** Full-file tries, for cameras that can't send pieces. */
+    private const val WHOLE_TRIES = 4
+
     /** A short message at the bottom of the screen, from any thread. */
     fun toast(context: Context, text: String) {
         val app = context.applicationContext
         Handler(Looper.getMainLooper()).post { Toast.makeText(app, text, Toast.LENGTH_LONG).show() }
     }
-
-    private const val ATTEMPTS = 4
 
     private class CancelledDownload : Exception()
 
