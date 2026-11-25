@@ -37,8 +37,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.VolumeOff
-import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -90,8 +89,9 @@ fun LiveScreen(
     var attempt by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
     var showing by remember { mutableStateOf(false) }
-    var muted by remember { mutableStateOf(true) }
     var reload by remember { mutableIntStateOf(0) }
+    /** Times the picture froze and was reconnected, shown so a flaky stream isn't a mystery. */
+    var stalls by remember { mutableIntStateOf(0) }
     /** What happened with each try, shown under the picture. */
     var log by remember { mutableStateOf<List<String>>(emptyList()) }
 
@@ -102,7 +102,14 @@ fun LiveScreen(
             // Small buffers: live view should be as close to live as possible
             .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(500, 2000, 250, 500).build())
             .build()
-            .apply { volume = 0f }
+            .apply {
+                // Picture only. The player keeps video in step with sound, and the camera sends no sound while
+                // its microphone is off, which froze the picture on its first frame.
+                trackSelectionParameters = trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                    .build()
+                volume = 0f
+            }
     }
     fun next(reason: String) {
         candidates.getOrNull(attempt)?.let { log = log + "${label(it)}: $reason" }
@@ -149,6 +156,25 @@ fun LiveScreen(
         // TCP first: that's what the camera reports and what the stock app uses
         candidates = urls.map { it to true } + urls.map { it to false }
     }
+    // If the picture stops moving, reconnect (counts the frames shown every few seconds)
+    LaunchedEffect(player, showing) {
+        if (!showing) return@LaunchedEffect
+        var last = -1
+        var still = 0
+        while (true) {
+            delay(2000)
+            val counters = player.videoDecoderCounters ?: continue
+            counters.ensureUpdated()
+            val shown = counters.renderedOutputBufferCount
+            still = if (shown == last) still + 1 else 0
+            last = shown
+            if (still >= 2) {
+                stalls++
+                reload++
+                return@LaunchedEffect
+            }
+        }
+    }
     LaunchedEffect(candidates, attempt, reload) {
         val c = candidates.getOrNull(attempt) ?: return@LaunchedEffect
         val source = RtspMediaSource.Factory()
@@ -194,16 +220,8 @@ fun LiveScreen(
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Column(Modifier.weight(1f)) {
                         Text(if (showing) "Live" else "Connecting…", fontWeight = FontWeight.Bold)
+                        if (stalls > 0) Text("Picture froze and reconnected $stalls ${if (stalls == 1) "time" else "times"}", style = MaterialTheme.typography.bodySmall)
                         if (!showing && error == null) candidates.getOrNull(attempt)?.let { Text("Trying " + label(it), style = MaterialTheme.typography.bodySmall) }
-                    }
-                    IconButton(onClick = {
-                        muted = !muted
-                        player.volume = if (muted) 0f else 1f
-                    }) {
-                        Icon(
-                            if (muted) Icons.AutoMirrored.Outlined.VolumeOff else Icons.AutoMirrored.Outlined.VolumeUp,
-                            contentDescription = if (muted) "Sound on" else "Mute",
-                        )
                     }
                 }
             }
@@ -262,7 +280,7 @@ fun LiveScreen(
             OutlinedButton(onClick = { reload++ }) { Text("Reconnect") }
         }
         Text(
-            "Sound and recording change the camera itself. Use the speaker button to hear the live audio on your phone.",
+            "Sound and recording change what the camera records.",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp).widthIn(max = 420.dp),
         )
