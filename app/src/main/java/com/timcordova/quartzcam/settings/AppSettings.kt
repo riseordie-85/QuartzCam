@@ -33,6 +33,15 @@ object AppSettings {
     private val _host = MutableStateFlow(CamApi.DEFAULT_HOST)
     val host: StateFlow<String> = _host.asStateFlow()
 
+    /** Set the camera's clock from the phone each time it connects. */
+    private val _syncClock = MutableStateFlow(true)
+    val syncClock: StateFlow<Boolean> = _syncClock.asStateFlow()
+
+    fun setSyncClock(on: Boolean) {
+        _syncClock.value = on
+        prefs?.edit()?.putBoolean("sync_clock", on)?.apply()
+    }
+
     fun init(context: Context) {
         val p = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         prefs = p
@@ -40,6 +49,7 @@ object AppSettings {
         _look.value = QuartzLook.fromJson(p.getString("look", null)) ?: defaultLook
         _host.value = p.getString("host", null)?.takeIf { it.isNotBlank() } ?: CamApi.DEFAULT_HOST
         CamApi.host = _host.value
+        _syncClock.value = p.getBoolean("sync_clock", true)
     }
 
     fun setTheme(mode: ThemeMode) {

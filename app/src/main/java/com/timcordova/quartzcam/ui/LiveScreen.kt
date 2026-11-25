@@ -105,17 +105,21 @@ fun LiveScreen(padding: PaddingValues) {
         showing = false
         attempt = 0
         log = emptyList()
+        // The camera only sends its stream once it's switched to live mode (what the stock app does first)
+        val entered = withContext(Dispatchers.IO) { CamApi.enterRecorder() }
         val info = withContext(Dispatchers.IO) { CamApi.mediaInfo() }
         val reported = info?.rtsp?.takeIf { it.startsWith("rtsp://") }
         val urls = buildList {
-            if (reported != null) add(reported)
-            // The camera also reports a port; some models serve the stream there instead
-            if (info != null && info.port > 0) add("rtsp://${CamApi.host}:${info.port}/streamtype=0")
-            add("rtsp://${CamApi.host}/streamtype=0")
+            // Exactly what the stock app opens; the reported address is the same thing without the port
             add("rtsp://${CamApi.host}:554/streamtype=0")
+            if (reported != null) add(reported)
         }.distinct()
-        if (info == null) log = listOf("The camera didn't answer /app/getmediainfo")
-        candidates = urls.flatMap { listOf(it to true, it to false) }
+        log = buildList {
+            if (!entered) add("The camera didn't switch to live mode (/app/enterrecorder)")
+            if (info == null) add("The camera didn't answer /app/getmediainfo")
+        }
+        // TCP first: that's what the camera reports and what the stock app uses
+        candidates = urls.map { it to true } + urls.map { it to false }
     }
     LaunchedEffect(candidates, attempt, reload) {
         val c = candidates.getOrNull(attempt) ?: return@LaunchedEffect

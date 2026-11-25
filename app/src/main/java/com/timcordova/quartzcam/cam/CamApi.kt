@@ -20,6 +20,14 @@ import java.time.format.DateTimeFormatter
  *   GET /app/getthumbnail?file=<name>                → a still from the clip
  *   GET <name>                                       → the clip itself (plain HTTP download)
  *   GET /app/getmediainfo                            → {"info":{"rtsp":"rtsp://192.168.169.1/streamtype=0","transport":"tcp","port":2222}}
+ *   GET /app/enterrecorder                           → puts the camera in live mode; needed before the RTSP stream sends
+ *                                                      anything (seen in a capture of the Viidure app)
+ *   GET /app/setsystime?date=yyyyMMddHHmmss          → sets the camera's clock (Viidure does this on every connect)
+ *   RTSP rtsp://192.168.169.1:554/streamtype=0       → live view, H.265 video + G.711 (PCMA) audio, RTP over TCP
+ *   TCP 192.168.169.1:2222                           → the camera pushes JSON events here ({"msgid":"rec",...}); unused
+ *
+ * Also seen, not used yet: /app/getdeviceattr (Wi-Fi name, firmware), /app/getparamitems?param=all and
+ * /app/getparamvalue?param=all (camera settings), /app/setparamvalue?param=rec|mic&value=0|1, /app/snapshot.
  *
  * No login: anyone on the camera's Wi-Fi can use it, so its Wi-Fi password matters.
  */
@@ -111,6 +119,15 @@ object CamApi {
         val info = getJson("/app/getmediainfo").ok().optJSONObject("info") ?: return null
         MediaInfo(info.optString("rtsp"), info.optString("transport"), info.optInt("port"))
     }.getOrNull()
+
+    /** Switches the camera to live mode, so its RTSP stream starts sending video. */
+    fun enterRecorder(): Boolean = runCatching { getJson("/app/enterrecorder").optInt("result", -1) == 0 }.getOrDefault(false)
+
+    /** Sets the camera's clock to the phone's, so clip times are right. */
+    fun setClock(): Boolean = runCatching {
+        val now = LocalDateTime.now().format(stamp)
+        getJson("/app/setsystime?date=$now").optInt("result", -1) == 0
+    }.getOrDefault(false)
 
     /** Every file in [folder], oldest first. Folders the camera doesn't have come back empty. */
     fun files(folder: Folder): List<CamFile> {

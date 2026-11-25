@@ -84,7 +84,10 @@ object CamConnection {
             for (n in networks) {
                 if (!reachable(n)) continue
                 cm?.bindProcessToNetwork(n)
+                val fresh = bound != n
                 bound = n
+                // Like the stock app: keep the camera's clock in step with the phone
+                if (fresh && com.timcordova.quartzcam.settings.AppSettings.syncClock.value) CamApi.setClock()
                 val info = runCatching { CamApi.productInfo() }.getOrNull()
                 _state.value = State(Status.CONNECTED, info)
                 return@launch

@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -70,6 +71,7 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
     val theme by AppSettings.theme.collectAsState()
     val look by AppSettings.look.collectAsState()
     val host by AppSettings.host.collectAsState()
+    val syncClock by AppSettings.syncClock.collectAsState()
     val list = rememberLazyListState()
 
     QuartzScaffold(
@@ -103,6 +105,14 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
                             progress = { if (sd.totalMb > 0) sd.usedMb.toFloat() / sd.totalMb else 0f },
                             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(50)),
                         )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Set the camera's clock", fontWeight = FontWeight.Bold)
+                            Text("From your phone, each time it connects, so clip times are right", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(checked = syncClock, onCheckedChange = { AppSettings.setSyncClock(it) })
                     }
                     Spacer(Modifier.height(14.dp))
                     var address by remember(host) { mutableStateOf(host) }

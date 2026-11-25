@@ -30,6 +30,9 @@ Built for XMSilicon-based dash cams that use the Viidure-style `/app/` API at `1
 | `/app/getthumbnail?file=<path>` | Thumbnail for a clip |
 | `<path>` | The clip itself |
 | `/app/getmediainfo` | Live view RTSP address |
+| `/app/enterrecorder` | Live mode; needed before the stream sends video |
+| `/app/setsystime?date=yyyyMMddHHmmss` | Sets the camera's clock |
+| `rtsp://192.168.169.1:554/streamtype=0` | Live view: H.265 + G.711 audio, RTP over TCP |
 
 ## Building
 
