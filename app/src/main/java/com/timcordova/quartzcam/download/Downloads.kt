@@ -158,6 +158,9 @@ object Downloads {
                     val c = URL(CamApi.fileUrl(f)).openConnection() as HttpURLConnection
                     c.connectTimeout = 10_000
                     c.readTimeout = 30_000
+                    // A fresh connection each time, no compression: the camera's little web server copes best with that
+                    c.setRequestProperty("Connection", "close")
+                    c.setRequestProperty("Accept-Encoding", "identity")
                     if (done > 0) c.setRequestProperty("Range", "bytes=$done-")
                     try {
                         val code = c.responseCode
@@ -194,11 +197,12 @@ object Downloads {
                     } finally {
                         c.disconnect()
                     }
-                    if (total > 0 && done < total) throw IOException("the connection dropped at ${done * 100 / total}%")
+                    if (total > 0 && done < total) throw IOException("the connection dropped")
                     lastError = null
                     break
                 } catch (e: IOException) {
-                    lastError = e.message ?: e.javaClass.simpleName
+                    val reached = if (total > 0) " at ${done * 100 / total}%" else ""
+                    lastError = (e.message ?: e.javaClass.simpleName) + reached
                     if (attempt < ATTEMPTS) {
                         val msg = lastError
                         set(f.path) { it.copy(error = "Retrying ($msg)") }

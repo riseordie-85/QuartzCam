@@ -11,6 +11,9 @@ import com.timcordova.quartzcam.settings.AppSettings
 class CamApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
+        // Don't reuse connections to the camera: its web server closes them without warning, and a reused dead
+        // connection fails with "unexpected end of stream"
+        System.setProperty("http.keepAlive", "false")
         AppSettings.init(this)
         Downloads.init(this)
         CamConnection.start(this)
