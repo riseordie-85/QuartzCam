@@ -111,6 +111,24 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
         }
     }
 
+    var pausedForSave by remember { mutableStateOf(false) }
+
+    // The camera serves one video at a time best, so watching while it sends a download can stall the download.
+    // Stop streaming while it saves; play picks up again where it was.
+    fun saveClips(files: List<com.timcordova.quartzcam.cam.CamFile>) {
+        player.pause()
+        player.stop()
+        pausedForSave = true
+        save(files)
+    }
+
+    fun resume() {
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.play()
+        pausedForSave = false
+        error = null
+    }
+
     fun seek(timeMs: Long) {
         val (i, off) = drive.locate(timeMs)
         player.seekTo(i, off)
@@ -132,7 +150,7 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
                 Text("${clock(drive.startMs)} – ${clock(drive.endMs)} · ${drive.clips.size} clips", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
             }
             if (current != null) {
-                IconButton(onClick = { save(listOf(current.file)) }) {
+                IconButton(onClick = { saveClips(listOf(current.file)) }) {
                     Icon(Icons.Outlined.Download, contentDescription = "Save this clip", tint = Color.White)
                 }
             }
@@ -155,9 +173,7 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.background(Color.Black.copy(alpha = 0.7f)).padding(16.dp)) {
                     Text(it, color = Color.White)
                     TextButton(onClick = {
-                        error = null
-                        player.prepare()
-                        player.play()
+                        resume()
                     }) { Text("Try again") }
                 }
             }
@@ -170,6 +186,9 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Text(clockSeconds(shown), color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            if (pausedForSave) {
+                Text("Paused while the camera sends the download. Press play to keep watching.", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+            }
             RangeStrip(drive, sos, markA, markB)
             Slider(
                 value = dragging ?: ((now - drive.startMs).toFloat() / span).coerceIn(0f, 1f),
@@ -191,7 +210,7 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
                 IconButton(onClick = { seek(now - 10_000) }) { Icon(Icons.Filled.Replay10, contentDescription = "Back 10 seconds", tint = Color.White) }
                 Spacer(Modifier.width(16.dp))
                 FilledIconButton(
-                    onClick = { if (player.isPlaying) player.pause() else player.play() },
+                    onClick = { if (player.isPlaying) player.pause() else resume() },
                     modifier = Modifier.size(60.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Color.Black),
                 ) {
@@ -210,7 +229,7 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
                     if (inRange.isNotEmpty()) {
                         AssistChip(
                             onClick = {
-                                save(inRange.map { it.file })
+                                saveClips(inRange.map { it.file })
                                 markA = null
                                 markB = null
                             },

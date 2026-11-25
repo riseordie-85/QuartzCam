@@ -29,6 +29,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
+import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -83,6 +88,9 @@ object Downloads {
         if (add.isEmpty()) return
         _jobs.update { list -> list.filterNot { j -> !j.active && add.any { it.path == j.file.path } } + add.map { DownloadJob(it) } }
         ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java))
+        val kb = add.sumOf { it.sizeKb }
+        val what = if (add.size == 1) "clip" else "${add.size} clips"
+        toast(context, "Saving $what (${sizeText(kb)}). Progress is under Downloads.")
     }
 
     fun cancel(path: String) {
@@ -100,6 +108,11 @@ object Downloads {
 
     fun isSaved(f: CamFile): Boolean = f.name in _saved.value
 
+    fun retry(context: Context, job: DownloadJob) = enqueue(context, listOf(job.file))
+
+    private fun sizeText(kb: Long): String =
+        if (kb >= 1024L * 1024) "%.1f GB".format(kb / (1024.0 * 1024)) else "%.0f MB".format(kb / 1024.0)
+
     internal fun next(): DownloadJob? = _jobs.value.firstOrNull { it.state == JobState.QUEUED }
 
     internal fun set(path: String, change: (DownloadJob) -> DownloadJob) {
@@ -112,7 +125,10 @@ object Downloads {
         prefs?.edit()?.putStringSet("saved", HashSet(next))?.apply()
     }
 
-    /** Saves one clip; runs on a background thread. */
+    /**
+     * Saves one clip; runs on a background thread. The camera's Wi-Fi drops out now and then, so a failed transfer
+     * is retried a few times, picking up where it stopped when the camera allows it.
+     */
     internal fun download(context: Context, job: DownloadJob, onProgress: () -> Unit) {
         val f = job.file
         val resolver = context.contentResolver
@@ -124,60 +140,97 @@ object Downloads {
             put(MediaStore.Video.Media.IS_PENDING, 1)
         }
         val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val uri = resolver.insert(collection, values)
+        val uri = runCatching { resolver.insert(collection, values) }.getOrNull()
         if (uri == null) {
             set(f.path) { it.copy(state = JobState.FAILED, error = "Couldn't create the file on the phone") }
             return
         }
         cancelled = null
-        set(f.path) { it.copy(state = JobState.RUNNING, bytes = 0) }
-        var conn: HttpURLConnection? = null
+        set(f.path) { it.copy(state = JobState.RUNNING, bytes = 0, error = null) }
+        var done = 0L
+        var total = f.sizeBytes
+        var lastUpdate = 0L
         try {
-            val c = URL(CamApi.fileUrl(f)).openConnection() as HttpURLConnection
-            conn = c
-            c.connectTimeout = 8000
-            c.readTimeout = 20_000
-            if (c.responseCode != 200) throw java.io.IOException("Camera answered ${c.responseCode}")
-            val total = c.contentLengthLong.takeIf { it > 0 } ?: f.sizeBytes
-            set(f.path) { it.copy(total = total) }
-            var done = 0L
-            var lastUpdate = 0L
-            resolver.openOutputStream(uri)!!.use { out ->
-                c.inputStream.use { input ->
-                    val buf = ByteArray(256 * 1024)
-                    while (true) {
-                        if (cancelled == f.path) throw CancelledDownload()
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        done += n
-                        val now = System.currentTimeMillis()
-                        if (now - lastUpdate > 400) {
-                            lastUpdate = now
-                            val d = done
-                            set(f.path) { it.copy(bytes = d) }
-                            onProgress()
+            var lastError: String? = null
+            for (attempt in 1..ATTEMPTS) {
+                if (cancelled == f.path) throw CancelledDownload()
+                try {
+                    val c = URL(CamApi.fileUrl(f)).openConnection() as HttpURLConnection
+                    c.connectTimeout = 10_000
+                    c.readTimeout = 30_000
+                    if (done > 0) c.setRequestProperty("Range", "bytes=$done-")
+                    try {
+                        val code = c.responseCode
+                        if (code != 200 && code != 206) throw IOException("the camera answered $code")
+                        val resumed = code == 206 && done > 0
+                        if (!resumed) done = 0
+                        val len = c.contentLengthLong
+                        if (len > 0) total = if (resumed) done + len else len
+                        val t = total
+                        set(f.path) { it.copy(total = t, bytes = done, error = null) }
+                        resolver.openFileDescriptor(uri, "rw")!!.use { pfd ->
+                            FileOutputStream(pfd.fileDescriptor).use { out ->
+                                // Carry on after what's already saved, or start the file over
+                                if (resumed) out.channel.position(done) else out.channel.truncate(0)
+                                c.inputStream.use { input ->
+                                    val buf = ByteArray(256 * 1024)
+                                    while (true) {
+                                        if (cancelled == f.path) throw CancelledDownload()
+                                        val n = input.read(buf)
+                                        if (n < 0) break
+                                        out.write(buf, 0, n)
+                                        done += n
+                                        val now = System.currentTimeMillis()
+                                        if (now - lastUpdate > 400) {
+                                            lastUpdate = now
+                                            val d = done
+                                            set(f.path) { it.copy(bytes = d) }
+                                            onProgress()
+                                        }
+                                    }
+                                }
+                            }
                         }
+                    } finally {
+                        c.disconnect()
+                    }
+                    if (total > 0 && done < total) throw IOException("the connection dropped at ${done * 100 / total}%")
+                    lastError = null
+                    break
+                } catch (e: IOException) {
+                    lastError = e.message ?: e.javaClass.simpleName
+                    if (attempt < ATTEMPTS) {
+                        val msg = lastError
+                        set(f.path) { it.copy(error = "Retrying ($msg)") }
+                        Thread.sleep(2000L * attempt)
                     }
                 }
             }
+            if (lastError != null) throw IOException(lastError)
             val ready = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
             resolver.update(uri, ready, null, null)
             markSaved(f.name)
             val d = done
-            set(f.path) { it.copy(state = JobState.DONE, bytes = d, uri = uri) }
+            set(f.path) { it.copy(state = JobState.DONE, bytes = d, uri = uri, error = null) }
         } catch (e: CancelledDownload) {
             runCatching { resolver.delete(uri, null, null) }
-            set(f.path) { it.copy(state = JobState.CANCELLED) }
+            set(f.path) { it.copy(state = JobState.CANCELLED, error = null) }
         } catch (e: Exception) {
             runCatching { resolver.delete(uri, null, null) }
             set(f.path) { it.copy(state = JobState.FAILED, error = e.message ?: "Download failed") }
             CamConnection.reportFailure()
         } finally {
-            conn?.disconnect()
             if (cancelled == f.path) cancelled = null
         }
     }
+
+    /** A short message at the bottom of the screen, from any thread. */
+    fun toast(context: Context, text: String) {
+        val app = context.applicationContext
+        Handler(Looper.getMainLooper()).post { Toast.makeText(app, text, Toast.LENGTH_LONG).show() }
+    }
+
+    private const val ATTEMPTS = 4
 
     private class CancelledDownload : Exception()
 
@@ -195,11 +248,25 @@ class DownloadService : Service() {
         startForeground(NOTE_ID, note(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         if (worker?.isActive != true) {
             worker = scope.launch {
+                val handled = LinkedHashSet<String>()
                 while (true) {
                     val job = Downloads.next() ?: break
+                    handled += job.file.path
                     Downloads.download(this@DownloadService, job) { update() }
                     update()
                 }
+                // Say how it went, so a failure never goes unnoticed
+                val results = Downloads.jobs.value.filter { it.file.path in handled }
+                val saved = results.count { it.state == JobState.DONE }
+                val failed = results.filter { it.state == JobState.FAILED }
+                val msg = when {
+                    failed.isEmpty() && saved > 0 ->
+                        if (saved == 1) "Clip saved to Movies/${Downloads.FOLDER}" else "$saved clips saved to Movies/${Downloads.FOLDER}"
+                    failed.isNotEmpty() ->
+                        "${if (failed.size == 1) "A clip" else "${failed.size} clips"} couldn't be saved: ${failed.first().error}. Retry from Downloads."
+                    else -> null
+                }
+                msg?.let { Downloads.toast(this@DownloadService, it) }
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }

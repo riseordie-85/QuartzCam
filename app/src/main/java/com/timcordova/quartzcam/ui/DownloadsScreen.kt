@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ClearAll
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -83,6 +84,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
                         }
                     },
                     onCancel = { Downloads.cancel(job.file.path) },
+                    onRetry = { Downloads.retry(context, job) },
                 )
             }
         }
@@ -90,7 +92,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun JobRow(job: DownloadJob, onOpen: () -> Unit, onCancel: () -> Unit) {
+private fun JobRow(job: DownloadJob, onOpen: () -> Unit, onCancel: () -> Unit, onRetry: () -> Unit) {
     QuartzCard(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -104,7 +106,7 @@ private fun JobRow(job: DownloadJob, onOpen: () -> Unit, onCancel: () -> Unit) {
                 Text("${dayTitle(java.time.Instant.ofEpochMilli(job.file.startMs).atZone(java.time.ZoneId.systemDefault()).toLocalDate())}, ${clock(job.file.startMs)}", fontWeight = FontWeight.Bold)
                 val status = when (job.state) {
                     JobState.QUEUED -> "Waiting · ${sizeKb(job.file.sizeKb)}"
-                    JobState.RUNNING -> "${sizeBytes(job.bytes)} of ${sizeBytes(job.total)}"
+                    JobState.RUNNING -> "${sizeBytes(job.bytes)} of ${sizeBytes(job.total)}" + (job.error?.let { " · $it" } ?: "")
                     JobState.DONE -> "Saved · tap to play"
                     JobState.FAILED -> "Failed: ${job.error ?: "unknown error"}"
                     JobState.CANCELLED -> "Cancelled"
@@ -117,6 +119,8 @@ private fun JobRow(job: DownloadJob, onOpen: () -> Unit, onCancel: () -> Unit) {
             }
             if (job.active) {
                 IconButton(onClick = onCancel) { Icon(Icons.Outlined.Close, contentDescription = "Cancel") }
+            } else if (job.state == JobState.FAILED || job.state == JobState.CANCELLED) {
+                IconButton(onClick = onRetry) { Icon(Icons.Outlined.Refresh, contentDescription = "Try again") }
             }
         }
     }
