@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The dash cam only speaks plain HTTP/RTSP on its own Wi-Fi, and that's the only thing this app talks to. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
