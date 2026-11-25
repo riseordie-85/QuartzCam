@@ -8,6 +8,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -128,4 +144,84 @@ fun NotRecordingBanner(onTurnOn: () -> Unit, modifier: Modifier = Modifier) {
         Spacer(Modifier.width(8.dp))
         Text("The camera isn't recording · Turn on", color = Color.White, fontWeight = FontWeight.Bold)
     }
+}
+
+/** The camera's Wi-Fi name and password. Blank password = keep the current one. */
+@Composable
+fun CameraWifiControls(currentName: String?, onChange: (String?, String?) -> Unit) {
+    var name by remember(currentName) { mutableStateOf(currentName.orEmpty()) }
+    var password by remember { mutableStateOf("") }
+    var show by remember { mutableStateOf(false) }
+    val nameChanged = name.isNotBlank() && name != currentName
+    val nameOk = name.length in 1..32
+    val passwordOk = password.isEmpty() || password.length in 8..63
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Anyone who joins the camera's Wi-Fi can see and download your footage, so use a strong password.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it.take(32) },
+            label = { Text("Wi-Fi name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it.take(63) },
+            label = { Text("New password (leave empty to keep it)") },
+            singleLine = true,
+            isError = !passwordOk,
+            supportingText = { if (!passwordOk) Text("At least 8 characters") },
+            visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            trailingIcon = {
+                IconButton(onClick = { show = !show }) {
+                    Icon(if (show) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, contentDescription = if (show) "Hide" else "Show")
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { onChange(name.takeIf { nameChanged }, password.ifEmpty { null }) },
+            enabled = nameOk && passwordOk && (nameChanged || password.isNotEmpty()),
+        ) { Text("Change Wi-Fi") }
+    }
+}
+
+@Composable
+fun ChangeWifiDialog(ssid: String?, password: String?, currentName: String?, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val joinName = ssid ?: currentName ?: "the camera's Wi-Fi"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Change the camera's Wi-Fi?") },
+        text = {
+            Text(
+                "The camera restarts its Wi-Fi and your phone drops off it. Then join \"$joinName\" from your phone's Wi-Fi " +
+                    "settings" + (if (password != null) " with the new password, so make sure you have it written down." else ".") +
+                    " Recording pauses for a moment and starts again once you're back.",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Change") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+fun FormatCardDialog(clips: Int, sos: Int, photos: Int, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Erase the camera's card?") },
+        text = {
+            Text(
+                "This permanently deletes everything on the card: $clips clips, $sos SOS clips and $photos photos. " +
+                    "Save anything you want to keep to your phone first. It can't be undone.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Erase card", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

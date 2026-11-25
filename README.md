@@ -14,7 +14,8 @@ Part of the Quartz family (Quartz Gallery, Quartz Notes, Quartz Editor…), with
 - **Save a moment** — mark a start and end while watching and save just the clips around it, or save a clip or a whole drive.
   Downloads continue in the background and land in `Movies/Quartz Cam`.
 - **Clips** — every clip on the card, grouped by day, with SOS clips marked. Long-press to select several.
-- **Live view** — what the camera sees right now (RTSP).
+- **Live view** — what the camera sees right now (RTSP), with recording, sound and full-resolution photos.
+- **Camera settings** — everything the camera offers, plus its Wi-Fi name and password and erasing the card.
 - **Private** — talks only to the camera over its own Wi-Fi. No ads, no accounts, no tracking.
 
 ## Supported cameras
@@ -33,6 +34,12 @@ Built for XMSilicon-based dash cams that use the Viidure-style `/app/` API at `1
 | `/app/enterrecorder` | Live mode; needed before the stream sends video |
 | `/app/setsystime?date=yyyyMMddHHmmss` | Sets the camera's clock |
 | `rtsp://192.168.169.1:554/streamtype=0` | Live view: H.265 + G.711 audio, RTP over TCP |
+| `/app/getparamitems?param=all`, `/app/getparamvalue?param=all` | Camera settings and their values |
+| `/app/setparamvalue?param=<name>&value=<v>` | Change a setting (wrapped in `/app/setting?param=enter`/`exit`, recording paused) |
+| `/app/setwifi?wifissid=` / `?wifipwd=` then `/app/wifireboot` | Camera Wi-Fi name / password |
+| `/app/sdformat?index=1` | Erase the card |
+| `/app/snapshot` | Photo, saved to the card (listed in the `event` folder, `type: 1`) |
+| `/app/exitrecorder` | Leave live mode |
 
 ## Building
 

@@ -75,7 +75,12 @@ import kotlinx.coroutines.withContext
 /** What the camera sees right now, over RTSP (the address the camera reports, then a couple of fallbacks). */
 @OptIn(UnstableApi::class)
 @Composable
-fun LiveScreen(padding: PaddingValues, camSettings: CamSettingsState, onSet: (String, Int) -> Unit) {
+fun LiveScreen(
+    padding: PaddingValues,
+    camSettings: CamSettingsState,
+    onSet: (String, Int) -> Unit,
+    onSnapshot: ((com.timcordova.quartzcam.cam.CamFile?) -> Unit) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var texture by remember { mutableStateOf<TextureView?>(null) }
@@ -119,6 +124,8 @@ fun LiveScreen(padding: PaddingValues, camSettings: CamSettingsState, onSet: (St
         onDispose {
             player.removeListener(listener)
             player.release()
+            // Leave live mode, like the stock app does
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { CamApi.exitRecorder() }
         }
     }
     LaunchedEffect(reload) {
@@ -227,13 +234,20 @@ fun LiveScreen(padding: PaddingValues, camSettings: CamSettingsState, onSet: (St
             }
             FilledTonalButton(
                 onClick = {
-                    val frame = texture?.bitmap
-                    if (frame == null || !showing) {
-                        Downloads.toast(context, "No picture to save yet")
-                    } else {
-                        scope.launch {
-                            val ok = withContext(Dispatchers.IO) { savePhoto(context, frame) }
-                            Downloads.toast(context, if (ok) "Photo saved to Pictures/${Downloads.FOLDER}" else "Couldn't save the photo")
+                    // A full-resolution photo from the camera itself, saved to the phone. If the camera can't, the
+                    // live picture on screen is saved instead.
+                    val frame = if (showing) texture?.bitmap else null
+                    Downloads.toast(context, "Taking a photo…")
+                    onSnapshot { photo ->
+                        if (photo != null) {
+                            Downloads.enqueue(context, listOf(photo))
+                        } else if (frame != null) {
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) { savePhoto(context, frame) }
+                                Downloads.toast(context, if (ok) "Saved the live picture to Pictures/${Downloads.FOLDER}" else "Couldn't save the photo")
+                            }
+                        } else {
+                            Downloads.toast(context, "The camera couldn't take a photo")
                         }
                     }
                 },

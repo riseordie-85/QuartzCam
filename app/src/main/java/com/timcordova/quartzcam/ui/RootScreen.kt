@@ -138,7 +138,8 @@ private fun MainTabs(vm: CamViewModel, open: (Overlay) -> Unit) {
                 actions = {
                     if (selecting) {
                         IconButton(onClick = {
-                            val files = lib.library.all.filter { it.file.path in selected }.map { it.file }
+                            val files = lib.library.all.filter { it.file.path in selected }.map { it.file } +
+                                lib.library.photos.filter { it.path in selected }
                             save(files)
                             selected = emptySet()
                         }) { Icon(Icons.Outlined.Download, contentDescription = "Save to phone") }
@@ -184,7 +185,7 @@ private fun MainTabs(vm: CamViewModel, open: (Overlay) -> Unit) {
                 onRefresh = vm::refresh,
                 onSave = save,
             )
-            else -> LiveScreen(padding, camSettings, onSet = vm::setSetting)
+            else -> LiveScreen(padding, camSettings, onSet = vm::setSetting, onSnapshot = vm::snapshot)
         }
         // Hard to miss: the camera isn't recording (turned off here, in the old app, or on the camera)
         if (connected && camSettings.recording == false) {

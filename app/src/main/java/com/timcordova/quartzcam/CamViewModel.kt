@@ -4,12 +4,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.timcordova.quartzcam.cam.CamApi
 import com.timcordova.quartzcam.cam.CamConnection
+import com.timcordova.quartzcam.cam.CamFile
 import com.timcordova.quartzcam.cam.CamSetting
 import com.timcordova.quartzcam.cam.Folder
 import com.timcordova.quartzcam.cam.Library
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +36,8 @@ data class CamSettingsState(
     /** Settings being changed right now. */
     val busy: Set<String> = emptySet(),
     val error: String? = null,
+    /** The camera's Wi-Fi name and firmware. */
+    val device: CamApi.DeviceInfo? = null,
 ) {
     /** Null when unknown (not read yet, or the camera doesn't say). */
     val recording: Boolean? get() = values["rec"]?.let { it != 0 }
@@ -57,6 +62,13 @@ class CamViewModel : ViewModel() {
                 .collect { connected ->
                     watchJob?.cancel()
                     if (connected) {
+                        restoreAfterReconnect?.let { rec ->
+                            restoreAfterReconnect = null
+                            withContext(Dispatchers.IO) {
+                                CamApi.exitSettings()
+                                if (rec) CamApi.setSetting("rec", 1)
+                            }
+                        }
                         refresh()
                         loadSettings()
                         watchJob = launch { watchRecording() }
@@ -71,8 +83,34 @@ class CamViewModel : ViewModel() {
                 runCatching { CamApi.settingItems() to CamApi.settingValues() }
             }
             result
-                .onSuccess { (items, values) -> _settings.value = CamSettingsState(items, values) }
+                .onSuccess { (items, values) ->
+                    val device = withContext(Dispatchers.IO) { CamApi.deviceInfo() }
+                    _settings.value = CamSettingsState(items, values, device = device)
+                }
                 .onFailure { _settings.value = _settings.value.copy(error = "Couldn't read the camera's settings") }
+        }
+    }
+
+    /** After a Wi-Fi change: whether to start recording again once the camera is back (null: nothing to do). */
+    @Volatile
+    private var restoreAfterReconnect: Boolean? = null
+
+    /** One camera change at a time, so their steps don't interleave. */
+    private val changes = Mutex()
+
+    /**
+     * Runs [block] the way the stock app changes settings: recording stopped, the camera in settings mode, then
+     * settings mode closed and recording started again (if it was on). Runs on a background thread.
+     */
+    private suspend fun <T> inSettingsMode(block: () -> T): T = withContext(Dispatchers.IO) {
+        val wasRecording = (CamApi.settingValue("rec") ?: _settings.value.values["rec"]) != 0
+        if (wasRecording) CamApi.setSetting("rec", 0)
+        CamApi.enterSettings()
+        try {
+            block()
+        } finally {
+            CamApi.exitSettings()
+            if (wasRecording) CamApi.setSetting("rec", 1)
         }
     }
 
@@ -81,7 +119,14 @@ class CamViewModel : ViewModel() {
         val before = _settings.value.values[name]
         _settings.value = _settings.value.let { it.copy(values = it.values + (name to value), busy = it.busy + name, error = null) }
         viewModelScope.launch {
-            val ok = withContext(Dispatchers.IO) { CamApi.setSetting(name, value) }
+            val ok = changes.withLock {
+                // Recording and sound switch directly (the stock app does that from its live screen too)
+                if (name == "rec" || name == "mic") {
+                    withContext(Dispatchers.IO) { CamApi.setSetting(name, value) }
+                } else {
+                    inSettingsMode { CamApi.setSetting(name, value) }
+                }
+            }
             // Read back what the camera actually has now
             val actual = withContext(Dispatchers.IO) { CamApi.settingValue(name) }
             _settings.value = _settings.value.let { s ->
@@ -92,6 +137,63 @@ class CamViewModel : ViewModel() {
                     error = if (ok) null else "The camera didn't accept that change",
                 )
             }
+        }
+    }
+
+    /**
+     * Sends a new Wi-Fi name and/or password and restarts the camera's Wi-Fi. The phone drops off the camera's
+     * network; [onDone] says whether the camera took the change.
+     */
+    fun changeWifi(ssid: String?, password: String?, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = changes.withLock {
+                withContext(Dispatchers.IO) {
+                    val wasRecording = (CamApi.settingValue("rec") ?: _settings.value.values["rec"]) != 0
+                    if (wasRecording) CamApi.setSetting("rec", 0)
+                    CamApi.enterSettings()
+                    val good = CamApi.setWifi(ssid, password)
+                    if (good) {
+                        // The camera restarts its Wi-Fi now; settings mode is closed and recording restarted once
+                        // the phone is back on the camera's network
+                        restoreAfterReconnect = wasRecording
+                        CamApi.wifiReboot()
+                    } else {
+                        CamApi.exitSettings()
+                        if (wasRecording) CamApi.setSetting("rec", 1)
+                    }
+                    good
+                }
+            }
+            onDone(ok)
+            if (ok) CamConnection.retry()
+        }
+    }
+
+    /** Erases the camera's card, then reads it again. */
+    fun formatCard(onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = changes.withLock { inSettingsMode { CamApi.formatCard() } }
+            onDone(ok)
+            refresh()
+        }
+    }
+
+    /** Takes a full-resolution photo on the camera and hands it to [onPhoto] once it shows up on the card. */
+    fun snapshot(onPhoto: (CamFile?) -> Unit) {
+        viewModelScope.launch {
+            val photo = withContext(Dispatchers.IO) {
+                val before = runCatching { CamApi.files(Folder.EVENT).filter { it.isPhoto }.map { it.path }.toSet() }.getOrDefault(emptySet())
+                if (!CamApi.snapshot()) return@withContext null
+                // It takes the camera a moment to write the photo
+                repeat(6) {
+                    delay(500)
+                    val now = runCatching { CamApi.files(Folder.EVENT).filter { it.isPhoto } }.getOrDefault(emptyList())
+                    now.filter { it.path !in before }.maxByOrNull { it.startMs }?.let { return@withContext it }
+                }
+                null
+            }
+            onPhoto(photo)
+            refresh()
         }
     }
 

@@ -15,6 +15,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import com.timcordova.quartzcam.cam.CamApi
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -57,7 +65,7 @@ import com.timcordova.quartzcam.download.Downloads
 import com.timcordova.quartzcam.download.JobState
 import com.timcordova.quartzcam.quartz.quartzHeadingColor
 
-enum class ClipFilter(val label: String) { ALL("All"), LOOP("Driving"), SOS("SOS") }
+enum class ClipFilter(val label: String) { ALL("All"), LOOP("Driving"), SOS("SOS"), PHOTOS("Photos") }
 
 /** Every clip on the card, newest first, grouped by day. Long-press to select several. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -76,13 +84,17 @@ fun ClipsScreen(
     val jobs by Downloads.jobs.collectAsState()
     val saved by Downloads.saved.collectAsState()
     val lib = state.library
+    // Photos ride along as zero-length clips, so they list, select and save like the rest
+    val photoClips = remember(lib) { lib.photos.map { Clip(it, 0) } }
     val clips = remember(lib, filter) {
         when (filter) {
-            ClipFilter.ALL -> lib.all
+            ClipFilter.ALL -> lib.all + photoClips
             ClipFilter.LOOP -> lib.loop
             ClipFilter.SOS -> lib.sos
+            ClipFilter.PHOTOS -> photoClips
         }.sortedByDescending { it.startMs }
     }
+    var viewing by remember { mutableStateOf<CamFile?>(null) }
     val byDay = remember(clips) { clips.groupBy { it.startMs.toDate() } }
     val jobFor = remember(jobs) { jobs.associateBy { it.file.path } }
 
@@ -128,7 +140,11 @@ fun ClipsScreen(
         if (state.loaded && clips.isEmpty()) {
             item(key = "empty") {
                 Text(
-                    if (filter == ClipFilter.SOS) "No SOS clips on the card." else "No clips on the card.",
+                    when (filter) {
+                        ClipFilter.SOS -> "No SOS clips on the card."
+                        ClipFilter.PHOTOS -> "No photos on the card. Take one from the Live tab."
+                        else -> "No clips on the card."
+                    },
                     modifier = Modifier.padding(24.dp),
                 )
             }
@@ -150,13 +166,22 @@ fun ClipsScreen(
                     saved = clip.file.name in saved,
                     selected = clip.file.path in selected,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    onClick = { if (selected.isNotEmpty()) toggle(clip) else onOpen(clip) },
+                    onClick = {
+                        when {
+                            selected.isNotEmpty() -> toggle(clip)
+                            clip.file.isPhoto -> viewing = clip.file
+                            else -> onOpen(clip)
+                        }
+                    },
                     onLongClick = { toggle(clip) },
                     onSave = { onSave(listOf(clip.file)) },
                     onCancel = { Downloads.cancel(clip.file.path) },
                 )
             }
         }
+    }
+    viewing?.let { photo ->
+        PhotoViewer(photo, onSave = { onSave(listOf(photo)) }, onDismiss = { viewing = null })
     }
 }
 
@@ -196,9 +221,12 @@ private fun ClipRow(
             }
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(clock(clip.startMs), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("${duration(clip.durationMs)} · ${sizeKb(clip.file.sizeKb)}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (clip.file.isPhoto) "Photo · ${sizeKb(clip.file.sizeKb)}" else "${duration(clip.durationMs)} · ${sizeKb(clip.file.sizeKb)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-                    if (clip.file.folder != Folder.LOOP) Tag(clip.file.folder.label, SosRed)
+                    if (clip.file.folder != Folder.LOOP && !clip.file.isPhoto) Tag(clip.file.folder.label, SosRed)
                     if (clip.file.lens == "R") Tag("Rear", Color(0xFF5B5BD6))
                     if (saved) Tag("Saved", SavedGreen)
                 }
@@ -217,6 +245,37 @@ private fun ClipRow(
                 saved -> IconButton(onClick = onSave) { Icon(Icons.Outlined.DownloadDone, contentDescription = "Saved — save again") }
                 else -> IconButton(onClick = onSave) { Icon(Icons.Outlined.Download, contentDescription = "Save to phone") }
             }
+        }
+    }
+}
+
+/** A camera photo, full screen. */
+@Composable
+private fun PhotoViewer(photo: CamFile, onSave: () -> Unit, onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black).clickable(onClick = onDismiss), contentAlignment = Alignment.Center) {
+            AsyncImage(
+                model = CamApi.fileUrl(photo),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(20.dp),
+            ) {
+                FilledTonalButton(onClick = onSave) {
+                    Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Save to phone")
+                }
+                FilledTonalButton(onClick = onDismiss) { Text("Close") }
+            }
+            Text(
+                clockSeconds(photo.startMs),
+                color = Color.White,
+                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(20.dp),
+            )
         }
     }
 }

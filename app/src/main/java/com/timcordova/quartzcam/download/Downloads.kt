@@ -89,7 +89,12 @@ object Downloads {
         _jobs.update { list -> list.filterNot { j -> !j.active && add.any { it.path == j.file.path } } + add.map { DownloadJob(it) } }
         ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java))
         val kb = add.sumOf { it.sizeKb }
-        val what = if (add.size == 1) "clip" else "${add.size} clips"
+        val what = when {
+            add.size == 1 && add[0].isPhoto -> "photo"
+            add.size == 1 -> "clip"
+            add.all { it.isPhoto } -> "${add.size} photos"
+            else -> "${add.size} files"
+        }
         toast(context, "Saving $what (${sizeText(kb)}). Progress is under Downloads.")
     }
 
@@ -136,14 +141,19 @@ object Downloads {
     internal fun download(context: Context, job: DownloadJob, onProgress: () -> Unit) {
         val f = job.file
         val resolver = context.contentResolver
+        // Videos go to Movies/Quartz Cam, photos to Pictures/Quartz Cam
         val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, f.name)
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/" + FOLDER)
-            put(MediaStore.Video.Media.DATE_TAKEN, f.startMs)
-            put(MediaStore.Video.Media.IS_PENDING, 1)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+            put(MediaStore.MediaColumns.MIME_TYPE, if (f.isPhoto) "image/jpeg" else "video/mp4")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, (if (f.isPhoto) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_MOVIES) + "/" + FOLDER)
+            put(MediaStore.MediaColumns.DATE_TAKEN, f.startMs)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val collection = if (f.isPhoto) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        }
         val uri = runCatching { resolver.insert(collection, values) }.getOrNull()
         if (uri == null) {
             set(f.path) { it.copy(state = JobState.FAILED, error = "Couldn't create the file on the phone") }
@@ -266,7 +276,7 @@ object Downloads {
                     out.flush()
                 }
             }
-            val ready = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+            val ready = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
             resolver.update(uri, ready, null, null)
             markSaved(f.name)
             val d = done
@@ -325,9 +335,19 @@ class DownloadService : Service() {
                 val results = Downloads.jobs.value.filter { it.file.path in handled }
                 val saved = results.count { it.state == JobState.DONE }
                 val failed = results.filter { it.state == JobState.FAILED }
+                val done = results.filter { it.state == JobState.DONE }
+                val where = when {
+                    done.all { it.file.isPhoto } -> "Pictures/${Downloads.FOLDER}"
+                    done.none { it.file.isPhoto } -> "Movies/${Downloads.FOLDER}"
+                    else -> "Movies and Pictures/${Downloads.FOLDER}"
+                }
+                val what = when {
+                    saved == 1 && done.first().file.isPhoto -> "Photo"
+                    saved == 1 -> "Clip"
+                    else -> "$saved files"
+                }
                 val msg = when {
-                    failed.isEmpty() && saved > 0 ->
-                        if (saved == 1) "Clip saved to Movies/${Downloads.FOLDER}" else "$saved clips saved to Movies/${Downloads.FOLDER}"
+                    failed.isEmpty() && saved > 0 -> "$what saved to $where"
                     failed.isNotEmpty() ->
                         "${if (failed.size == 1) "A clip" else "${failed.size} clips"} couldn't be saved: ${failed.first().error}. Retry from Downloads."
                     else -> null

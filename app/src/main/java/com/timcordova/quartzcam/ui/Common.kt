@@ -104,7 +104,7 @@ fun QuartzCard(modifier: Modifier = Modifier, content: @Composable BoxScope.() -
 @Composable
 fun ClipThumb(file: CamFile, modifier: Modifier = Modifier) {
     SubcomposeAsyncImage(
-        model = CamApi.thumbUrl(file),
+        model = if (file.isPhoto) CamApi.fileUrl(file) else CamApi.thumbUrl(file),
         contentDescription = null,
         contentScale = ContentScale.Crop,
         modifier = modifier.background(Color.Black.copy(alpha = 0.35f)),

@@ -74,6 +74,9 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
     val syncClock by AppSettings.syncClock.collectAsState()
     val camSettings by vm.settings.collectAsState()
     var confirmStop by remember { mutableStateOf(false) }
+    var wifiChange by remember { mutableStateOf<Pair<String?, String?>?>(null) }
+    var confirmFormat by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val list = rememberLazyListState()
 
     QuartzScaffold(
@@ -151,6 +154,28 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
                     }
                 }
             }
+            if (conn.status == CamConnection.Status.CONNECTED) {
+                item {
+                    Section("Camera Wi-Fi") {
+                        CameraWifiControls(camSettings.device?.ssid) { ssid, pwd -> wifiChange = ssid to pwd }
+                    }
+                }
+                item {
+                    Section("Memory card") {
+                        lib.library.sd?.let { sd ->
+                            Text("${sizeMb(sd.usedMb)} used of ${sizeMb(sd.totalMb)}", style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        androidx.compose.material3.OutlinedButton(onClick = { confirmFormat = true }) {
+                            Text("Erase card…", color = MaterialTheme.colorScheme.error)
+                        }
+                        camSettings.device?.firmware?.takeIf { it.isNotBlank() }?.let {
+                            Spacer(Modifier.height(10.dp))
+                            Text("Camera firmware $it", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
             item {
                 Section("Theme") {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -205,6 +230,38 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+    wifiChange?.let { (ssid, pwd) ->
+        ChangeWifiDialog(
+            ssid = ssid,
+            password = pwd,
+            currentName = camSettings.device?.ssid,
+            onConfirm = {
+                wifiChange = null
+                vm.changeWifi(ssid, pwd) { ok ->
+                    com.timcordova.quartzcam.download.Downloads.toast(
+                        context,
+                        if (ok) "Camera Wi-Fi changed. Join it again from your phone's Wi-Fi settings." else "The camera didn't accept the change",
+                    )
+                }
+            },
+            onDismiss = { wifiChange = null },
+        )
+    }
+    if (confirmFormat) {
+        val l = lib.library
+        FormatCardDialog(
+            clips = l.loop.size,
+            sos = l.sos.size,
+            photos = l.photos.size,
+            onConfirm = {
+                confirmFormat = false
+                vm.formatCard { ok ->
+                    com.timcordova.quartzcam.download.Downloads.toast(context, if (ok) "Card erased" else "The camera couldn't erase the card")
+                }
+            },
+            onDismiss = { confirmFormat = false },
+        )
     }
     if (confirmStop) {
         StopRecordingDialog(

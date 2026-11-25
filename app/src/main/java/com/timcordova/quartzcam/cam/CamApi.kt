@@ -31,7 +31,16 @@ import java.time.format.DateTimeFormatter
  *   GET /app/getparamvalue?param=rec                 → one setting: {"info":{"value":1}}
  *   GET /app/setparamvalue?param=<name>&value=<v>    → change a setting (rec = recording on/off, mic, ...)
  *
- * Also seen, not used: /app/getdeviceattr (Wi-Fi name, firmware), /app/snapshot (a photo saved on the camera).
+ *   GET /app/setting?param=enter|exit                → wraps settings changes (the stock app also stops recording first
+ *                                                      with setparamvalue?param=rec&value=0 and starts it again after)
+ *   GET /app/setwifi?wifissid=<name>                 → new Wi-Fi name; then /app/wifireboot to apply
+ *   GET /app/setwifi?wifipwd=<password>              → new Wi-Fi password; then /app/wifireboot to apply
+ *   GET /app/sdformat?index=1                        → erases the card (takes a few seconds)
+ *   GET /app/getdeviceattr                           → {"ssid":"...","softver":"V1.0-20241014",...}
+ *   GET /app/snapshot                                → full-resolution photo, saved on the card; it then shows up in the
+ *                                                      "event" folder as /mnt/tfcard/pic/pic_0/CAP_....jpg with "type": 1
+ *   GET /app/exitrecorder                            → leaves live mode
+ *   GET /app/playback?param=enter|exit               → the stock app's browsing mode (stops recording); not needed here
  *
  * No login: anyone on the camera's Wi-Fi can use it, so its Wi-Fi password matters.
  */
@@ -63,7 +72,11 @@ data class CamFile(
     /** The camera reports sizes in KB. */
     val sizeKb: Long,
     val start: LocalDateTime,
+    /** 2 for videos, 1 for photos. */
+    val type: Int = 2,
 ) {
+    val isPhoto: Boolean get() = type == 1 || path.endsWith(".jpg", ignoreCase = true)
+
     val name: String get() = path.substringAfterLast('/')
 
     /** Which camera lens: "F" front, "R" rear (if there is one). */
@@ -156,6 +169,40 @@ object CamApi {
         getJson("/app/setparamvalue?param=$name&value=$value").optInt("result", -1) == 0
     }.getOrDefault(false)
 
+    data class DeviceInfo(val ssid: String, val firmware: String)
+
+    fun deviceInfo(): DeviceInfo? = runCatching {
+        val info = getJson("/app/getdeviceattr").ok().optJSONObject("info") ?: return null
+        DeviceInfo(info.optString("ssid"), info.optString("softver"))
+    }.getOrNull()
+
+    private fun ok(path: String, timeoutMs: Int = 6000): Boolean =
+        runCatching { getJson(path, timeoutMs).optInt("result", -1) == 0 }.getOrDefault(false)
+
+    fun enterSettings() = ok("/app/setting?param=enter")
+    fun exitSettings() = ok("/app/setting?param=exit")
+
+    /** Sends a new Wi-Fi name and/or password. Call [wifiReboot] afterwards to apply. */
+    fun setWifi(ssid: String? = null, password: String? = null): Boolean {
+        var good = true
+        if (ssid != null) good = ok("/app/setwifi?wifissid=" + java.net.URLEncoder.encode(ssid, "UTF-8").replace("+", "%20"))
+        if (password != null && good) good = ok("/app/setwifi?wifipwd=" + java.net.URLEncoder.encode(password, "UTF-8").replace("+", "%20"))
+        return good
+    }
+
+    /** Restarts the camera's Wi-Fi with the new name or password. The connection drops; there's no answer. */
+    fun wifiReboot() {
+        runCatching { getJson("/app/wifireboot", 3000) }
+    }
+
+    /** Erases everything on the card. */
+    fun formatCard() = ok("/app/sdformat?index=1", 30_000)
+
+    /** Takes a full-resolution photo, saved on the camera's card. */
+    fun snapshot() = ok("/app/snapshot")
+
+    fun exitRecorder() = ok("/app/exitrecorder")
+
     /** Switches the camera to live mode, so its RTSP stream starts sending video. */
     fun enterRecorder(): Boolean = runCatching { getJson("/app/enterrecorder").optInt("result", -1) == 0 }.getOrDefault(false)
 
@@ -194,9 +241,9 @@ object CamApi {
         val path = f.optString("name").takeIf { it.isNotBlank() } ?: return null
         val time = parseStamp(f.optString("createtimestr"))
             // Fall back to the time in the file name: REC_20261117150316_2144_F.mp4
-            ?: Regex("""_(\d{14})_""").find(path)?.groupValues?.get(1)?.let { parseStamp(it) }
+            ?: Regex("""_(\d{14})""").find(path)?.groupValues?.get(1)?.let { parseStamp(it) }
             ?: return null
-        return CamFile(path, folder, f.optLong("size"), time)
+        return CamFile(path, folder, f.optLong("size"), time, f.optInt("type", 2))
     }
 
     private fun parseStamp(s: String): LocalDateTime? =

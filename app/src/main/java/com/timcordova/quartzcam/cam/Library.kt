@@ -43,11 +43,13 @@ class Library(
     val sos: List<Clip>,
     val drives: List<Drive>,
     val sd: SdInfo?,
+    /** Photos taken with the camera (its snapshot button or the app's Photo button). */
+    val photos: List<CamFile> = emptyList(),
 ) {
     val all: List<Clip> = (loop + sos).sortedBy { it.startMs }
 
     /** Days with something recorded, newest first. */
-    val days: List<LocalDate> = all.map { it.startMs.toDate() }.distinct().sortedDescending()
+    val days: List<LocalDate> = (all.map { it.startMs.toDate() } + photos.map { it.startMs.toDate() }).distinct().sortedDescending()
 
     fun drivesOn(day: LocalDate): List<Drive> = drives.filter { it.startMs.toDate() == day }
 
@@ -66,9 +68,11 @@ class Library(
         private const val CLIP_MS = 180_000L
 
         fun build(loopFiles: List<CamFile>, sosFiles: List<CamFile>, sd: SdInfo?): Library {
-            val loop = withDurations(loopFiles.sortedBy { it.startMs })
-            val sos = withDurations(sosFiles.sortedBy { it.startMs }, consecutive = false)
-            return Library(loop, sos, drives(loop), sd)
+            // Photos come back mixed in with the videos (in the "event" folder)
+            val photos = (loopFiles + sosFiles).filter { it.isPhoto }.distinctBy { it.path }.sortedBy { it.startMs }
+            val loop = withDurations(loopFiles.filterNot { it.isPhoto }.sortedBy { it.startMs })
+            val sos = withDurations(sosFiles.filterNot { it.isPhoto }.sortedBy { it.startMs }, consecutive = false)
+            return Library(loop, sos, drives(loop), sd, photos)
         }
 
         /**
