@@ -59,6 +59,7 @@ import androidx.media3.ui.PlayerView
 import com.timcordova.quartzcam.cam.CamApi
 import com.timcordova.quartzcam.cam.Clip
 import com.timcordova.quartzcam.cam.Drive
+import com.timcordova.quartzcam.download.Downloads
 import kotlinx.coroutines.delay
 
 /**
@@ -70,6 +71,7 @@ import kotlinx.coroutines.delay
 fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Unit) {
     val context = LocalContext.current
     val save = rememberSaver()
+    val askNotes = rememberNoteAsk()
     SystemBarIcons(darkBackground = true)
     val player = remember(drive.id) {
         ExoPlayer.Builder(context).build().apply {
@@ -226,14 +228,20 @@ fun PlayerScreen(drive: Drive, startMs: Long, sos: List<Clip>, onBack: () -> Uni
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     AssistChip(onClick = { markA = now }, label = { Text(if (a == null) "Mark start" else "Start ${clock(a)}") })
                     AssistChip(onClick = { markB = now }, label = { Text(if (b == null) "Mark end" else "End ${clock(b)}") })
-                    if (inRange.isNotEmpty()) {
+                    if (inRange.isNotEmpty() && a != null && b != null) {
+                        val secs = kotlin.math.abs(b - a) / 1000
                         AssistChip(
                             onClick = {
-                                saveClips(inRange.map { it.file })
+                                // Stop streaming so the camera can send the download, then cut to exactly the marks
+                                player.pause()
+                                player.stop()
+                                pausedForSave = true
+                                askNotes()
+                                Downloads.enqueueRange(context, inRange.map { it.file }, a, b)
                                 markA = null
                                 markB = null
                             },
-                            label = { Text("Save ${inRange.size} ${if (inRange.size == 1) "clip" else "clips"}") },
+                            label = { Text("Save ${secs / 60}:${"%02d".format(secs % 60)}") },
                             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(18.dp)) },
                         )
                     }

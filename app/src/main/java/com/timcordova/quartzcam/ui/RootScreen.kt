@@ -58,13 +58,13 @@ sealed interface Overlay {
     data object Settings : Overlay
 }
 
-/** Saves clips, asking once for permission to show download progress in a notification. */
+/** Asks once for permission to show download progress in a notification. */
 @Composable
-fun rememberSaver(): (List<CamFile>) -> Unit {
+fun rememberNoteAsk(): () -> Unit {
     val context = LocalContext.current
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     return remember(context) {
-        { files: List<CamFile> ->
+        {
             if (!hasNotePermission(context)) {
                 val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
                 if (!prefs.getBoolean("asked_notes", false)) {
@@ -72,6 +72,18 @@ fun rememberSaver(): (List<CamFile>) -> Unit {
                     ask.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
+        }
+    }
+}
+
+/** Saves clips, asking once for permission to show download progress in a notification. */
+@Composable
+fun rememberSaver(): (List<CamFile>) -> Unit {
+    val context = LocalContext.current
+    val ask = rememberNoteAsk()
+    return remember(context) {
+        { files: List<CamFile> ->
+            ask()
             Downloads.enqueue(context, files)
         }
     }

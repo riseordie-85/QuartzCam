@@ -74,7 +74,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
             if (jobs.isEmpty()) {
                 item { Text("Nothing downloading.", modifier = Modifier.padding(20.dp)) }
             }
-            items(jobs.reversed(), key = { it.file.path }) { job ->
+            items(jobs.reversed(), key = { it.id }) { job ->
                 JobRow(
                     job,
                     onOpen = {
@@ -83,7 +83,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
                             runCatching { context.startActivity(view) }
                         }
                     },
-                    onCancel = { Downloads.cancel(job.file.path) },
+                    onCancel = { Downloads.cancel(job.id) },
                     onRetry = { Downloads.retry(context, job) },
                 )
             }
@@ -103,10 +103,18 @@ private fun JobRow(job: DownloadJob, onOpen: () -> Unit, onCancel: () -> Unit, o
         ) {
             ClipThumb(job.file, Modifier.height(54.dp).width(96.dp).clip(RoundedCornerShape(12.dp)))
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                Text("${dayTitle(java.time.Instant.ofEpochMilli(job.file.startMs).atZone(java.time.ZoneId.systemDefault()).toLocalDate())}, ${clock(job.file.startMs)}", fontWeight = FontWeight.Bold)
+                val r = job.range
+                val day = dayTitle(java.time.Instant.ofEpochMilli(r?.first ?: job.file.startMs).atZone(java.time.ZoneId.systemDefault()).toLocalDate())
+                Text(
+                    if (r != null) "$day, ${clockSeconds(r.first)} – ${clockSeconds(r.last)}" else "$day, ${clock(job.file.startMs)}",
+                    fontWeight = FontWeight.Bold,
+                )
+                if (r != null) Text("Cut to your marks", style = MaterialTheme.typography.bodySmall)
                 val status = when (job.state) {
                     JobState.QUEUED -> "Waiting · ${sizeKb(job.file.sizeKb)}"
-                    JobState.RUNNING -> "${sizeBytes(job.bytes)} of ${sizeBytes(job.total)}" + (job.error?.let { " · $it" } ?: "")
+                    JobState.RUNNING -> (job.stage?.let { "$it · " } ?: "") +
+                        (if (job.stage?.startsWith("Cutting") == true) "" else "${sizeBytes(job.bytes)} of ${sizeBytes(job.total)}") +
+                        (job.error?.let { " · $it" } ?: "")
                     JobState.DONE -> "Saved · tap to play"
                     JobState.FAILED -> "Failed: ${job.error ?: "unknown error"}"
                     JobState.CANCELLED -> "Cancelled"

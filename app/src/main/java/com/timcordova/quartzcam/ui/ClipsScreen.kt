@@ -96,7 +96,7 @@ fun ClipsScreen(
     }
     var viewing by remember { mutableStateOf<CamFile?>(null) }
     val byDay = remember(clips) { clips.groupBy { it.startMs.toDate() } }
-    val jobFor = remember(jobs) { jobs.associateBy { it.file.path } }
+    val jobFor = remember(jobs) { jobs.filter { it.range == null }.associateBy { it.file.path } }
 
     fun toggle(c: Clip) {
         val p = c.file.path
