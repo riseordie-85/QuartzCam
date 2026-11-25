@@ -51,6 +51,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.timcordova.quartzcam.cam.CamApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** What the camera sees right now, over RTSP (the address the camera reports, then a couple of fallbacks). */
@@ -58,12 +59,17 @@ import kotlinx.coroutines.withContext
 @Composable
 fun LiveScreen(padding: PaddingValues) {
     val context = LocalContext.current
-    var candidates by remember { mutableStateOf<List<String>>(emptyList()) }
+    /** Each address the camera might stream on, over TCP and then UDP. */
+    var candidates by remember { mutableStateOf<List<Pair<String, Boolean>>>(emptyList()) }
     var attempt by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
     var showing by remember { mutableStateOf(false) }
     var muted by remember { mutableStateOf(true) }
     var reload by remember { mutableIntStateOf(0) }
+    /** What happened with each try, shown under the picture. */
+    var log by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun label(c: Pair<String, Boolean>) = c.first + if (c.second) " (TCP)" else " (UDP)"
 
     val player = remember {
         ExoPlayer.Builder(context)
@@ -72,11 +78,15 @@ fun LiveScreen(padding: PaddingValues) {
             .build()
             .apply { volume = 0f }
     }
+    fun next(reason: String) {
+        candidates.getOrNull(attempt)?.let { log = log + "${label(it)}: $reason" }
+        showing = false
+        if (attempt + 1 < candidates.size) attempt++ else error = "No live picture from the camera"
+    }
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
-                showing = false
-                if (attempt + 1 < candidates.size) attempt++ else error = "No live picture (${e.errorCodeName})"
+                next(e.errorCodeName + (e.cause?.message?.let { " – $it" } ?: ""))
             }
 
             override fun onRenderedFirstFrame() {
@@ -94,24 +104,34 @@ fun LiveScreen(padding: PaddingValues) {
         error = null
         showing = false
         attempt = 0
+        log = emptyList()
         val info = withContext(Dispatchers.IO) { CamApi.mediaInfo() }
         val reported = info?.rtsp?.takeIf { it.startsWith("rtsp://") }
-        val list = buildList {
+        val urls = buildList {
             if (reported != null) add(reported)
             // The camera also reports a port; some models serve the stream there instead
             if (info != null && info.port > 0) add("rtsp://${CamApi.host}:${info.port}/streamtype=0")
             add("rtsp://${CamApi.host}/streamtype=0")
+            add("rtsp://${CamApi.host}:554/streamtype=0")
         }.distinct()
-        candidates = list
+        if (info == null) log = listOf("The camera didn't answer /app/getmediainfo")
+        candidates = urls.flatMap { listOf(it to true, it to false) }
     }
     LaunchedEffect(candidates, attempt, reload) {
-        val url = candidates.getOrNull(attempt) ?: return@LaunchedEffect
+        val c = candidates.getOrNull(attempt) ?: return@LaunchedEffect
         val source = RtspMediaSource.Factory()
-            .setForceUseRtpTcp(true)
-            .createMediaSource(MediaItem.fromUri(url))
+            .setForceUseRtpTcp(c.second)
+            .setTimeoutMs(6000)
+            .createMediaSource(MediaItem.fromUri(c.first))
         player.setMediaSource(source)
         player.prepare()
         player.playWhenReady = true
+        // Some cameras accept the connection and then send nothing: move on after a while
+        delay(9000)
+        if (!showing && error == null) {
+            player.stop()
+            next("no picture after 9 seconds")
+        }
     }
 
     Column(
@@ -143,7 +163,7 @@ fun LiveScreen(padding: PaddingValues) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Column(Modifier.weight(1f)) {
                         Text(if (showing) "Live" else "Connecting…", fontWeight = FontWeight.Bold)
-                        candidates.getOrNull(attempt)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        if (!showing && error == null) candidates.getOrNull(attempt)?.let { Text("Trying " + label(it), style = MaterialTheme.typography.bodySmall) }
                     }
                     IconButton(onClick = {
                         muted = !muted
@@ -160,6 +180,15 @@ fun LiveScreen(padding: PaddingValues) {
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = { reload++ }) { Text("Reconnect") }
+        }
+        if (log.isNotEmpty() && !showing) {
+            Spacer(Modifier.height(8.dp))
+            QuartzCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("What was tried", fontWeight = FontWeight.Bold)
+                    log.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
         Text(
