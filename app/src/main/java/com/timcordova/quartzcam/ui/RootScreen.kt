@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -27,7 +30,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.timcordova.quartzcam.CamViewModel
@@ -93,6 +99,7 @@ private fun MainTabs(vm: CamViewModel, open: (Overlay) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(Tab.TIMELINE) }
     val conn by CamConnection.state.collectAsState()
     val lib by vm.state.collectAsState()
+    val camSettings by vm.settings.collectAsState()
     val jobs by Downloads.jobs.collectAsState()
     val activeDownloads = jobs.count { it.active }
     val clipsList = rememberLazyListState()
@@ -156,6 +163,7 @@ private fun MainTabs(vm: CamViewModel, open: (Overlay) -> Unit) {
             )
         },
     ) { padding ->
+      Box(Modifier.fillMaxSize()) {
         when {
             !connected -> ConnectPanel(conn.status, padding)
             tab == Tab.TIMELINE -> TimelineScreen(
@@ -176,7 +184,15 @@ private fun MainTabs(vm: CamViewModel, open: (Overlay) -> Unit) {
                 onRefresh = vm::refresh,
                 onSave = save,
             )
-            else -> LiveScreen(padding)
+            else -> LiveScreen(padding, camSettings, onSet = vm::setSetting)
         }
+        // Hard to miss: the camera isn't recording (turned off here, in the old app, or on the camera)
+        if (connected && camSettings.recording == false) {
+            NotRecordingBanner(
+                onTurnOn = { vm.setSetting("rec", 1) },
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = padding.calculateTopPadding() + 4.dp),
+            )
+        }
+      }
     }
 }

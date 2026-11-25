@@ -1,6 +1,26 @@
 package com.timcordova.quartzcam.ui
 
 import androidx.annotation.OptIn
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.Bitmap
+import android.os.Environment
+import android.provider.MediaStore
+import android.view.TextureView
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MicOff
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.clip
+import com.timcordova.quartzcam.CamSettingsState
+import com.timcordova.quartzcam.download.Downloads
+import kotlinx.coroutines.launch
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,8 +67,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import com.timcordova.quartzcam.cam.CamApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -57,8 +75,11 @@ import kotlinx.coroutines.withContext
 /** What the camera sees right now, over RTSP (the address the camera reports, then a couple of fallbacks). */
 @OptIn(UnstableApi::class)
 @Composable
-fun LiveScreen(padding: PaddingValues) {
+fun LiveScreen(padding: PaddingValues, camSettings: CamSettingsState, onSet: (String, Int) -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var texture by remember { mutableStateOf<TextureView?>(null) }
+    var confirmStop by remember { mutableStateOf(false) }
     /** Each address the camera might stream on, over TCP and then UDP. */
     var candidates by remember { mutableStateOf<List<Pair<String, Boolean>>>(emptyList()) }
     var attempt by remember { mutableIntStateOf(0) }
@@ -149,14 +170,13 @@ fun LiveScreen(padding: PaddingValues) {
         QuartzCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
             Column {
                 Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black), contentAlignment = Alignment.Center) {
+                    // A TextureView (not a SurfaceView) so the current frame can be saved as a photo
                     AndroidView(
                         factory = { ctx ->
-                            PlayerView(ctx).apply {
-                                useController = false
-                                keepScreenOn = true
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                setShutterBackgroundColor(android.graphics.Color.BLACK)
-                                this.player = player
+                            TextureView(ctx).also { tv ->
+                                tv.keepScreenOn = true
+                                player.setVideoTextureView(tv)
+                                texture = tv
                             }
                         },
                         modifier = Modifier.fillMaxSize(),
@@ -182,9 +202,56 @@ fun LiveScreen(padding: PaddingValues) {
             }
         }
         Spacer(Modifier.height(12.dp))
+        // Camera controls
+        val recording = camSettings.recording
+        val mic = camSettings.values["mic"]?.let { it != 0 }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilledTonalButton(
+                onClick = { if (recording == true) confirmStop = true else onSet("rec", 1) },
+                enabled = recording != null && "rec" !in camSettings.busy,
+            ) {
+                Box(Modifier.size(10.dp).clip(RoundedCornerShape(50)).background(if (recording == true) SosRed else Color.Gray))
+                Spacer(Modifier.width(8.dp))
+                Text(if (recording == true) "Recording" else "Not recording")
+            }
+            FilledTonalButton(
+                onClick = { if (mic != null) onSet("mic", if (mic) 0 else 1) },
+                enabled = mic != null && "mic" !in camSettings.busy,
+            ) {
+                Icon(if (mic == false) Icons.Outlined.MicOff else Icons.Outlined.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (mic == false) "Sound off" else "Sound on")
+            }
+            FilledTonalButton(
+                onClick = {
+                    val frame = texture?.bitmap
+                    if (frame == null || !showing) {
+                        Downloads.toast(context, "No picture to save yet")
+                    } else {
+                        scope.launch {
+                            val ok = withContext(Dispatchers.IO) { savePhoto(context, frame) }
+                            Downloads.toast(context, if (ok) "Photo saved to Pictures/${Downloads.FOLDER}" else "Couldn't save the photo")
+                        }
+                    }
+                },
+            ) {
+                Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Photo")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = { reload++ }) { Text("Reconnect") }
         }
+        Text(
+            "Sound and recording change the camera itself. Use the speaker button to hear the live audio on your phone.",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp).widthIn(max = 420.dp),
+        )
         if (log.isNotEmpty() && !showing) {
             Spacer(Modifier.height(8.dp))
             QuartzCard(Modifier.fillMaxWidth().widthIn(max = 900.dp)) {
@@ -201,4 +268,31 @@ fun LiveScreen(padding: PaddingValues) {
             modifier = Modifier.padding(horizontal = 12.dp).widthIn(max = 420.dp),
         )
     }
+
+    if (confirmStop) {
+        StopRecordingDialog(
+            onConfirm = {
+                confirmStop = false
+                onSet("rec", 0)
+            },
+            onDismiss = { confirmStop = false },
+        )
+    }
 }
+
+/** Saves a live frame to Pictures/Quartz Cam. */
+private fun savePhoto(context: Context, frame: Bitmap): Boolean = runCatching {
+    val name = "QuartzCam_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".jpg"
+    val values = ContentValues().apply {
+        put(MediaStore.Images.Media.DISPLAY_NAME, name)
+        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/" + Downloads.FOLDER)
+        put(MediaStore.Images.Media.IS_PENDING, 1)
+    }
+    val resolver = context.contentResolver
+    val uri = resolver.insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
+        ?: return@runCatching false
+    resolver.openOutputStream(uri)!!.use { frame.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+    resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+    true
+}.getOrDefault(false)

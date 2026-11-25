@@ -72,6 +72,8 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
     val look by AppSettings.look.collectAsState()
     val host by AppSettings.host.collectAsState()
     val syncClock by AppSettings.syncClock.collectAsState()
+    val camSettings by vm.settings.collectAsState()
+    var confirmStop by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
 
     QuartzScaffold(
@@ -140,6 +142,15 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
                     }
                 }
             }
+            if (conn.status == CamConnection.Status.CONNECTED) {
+                item {
+                    Section("Camera settings") {
+                        CameraSettingsList(camSettings) { name, value ->
+                            if (name == "rec" && value == 0) confirmStop = true else vm.setSetting(name, value)
+                        }
+                    }
+                }
+            }
             item {
                 Section("Theme") {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -195,7 +206,17 @@ fun SettingsScreen(vm: CamViewModel, onBack: () -> Unit) {
             }
         }
     }
+    if (confirmStop) {
+        StopRecordingDialog(
+            onConfirm = {
+                confirmStop = false
+                vm.setSetting("rec", 0)
+            },
+            onDismiss = { confirmStop = false },
+        )
+    }
 }
+
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {

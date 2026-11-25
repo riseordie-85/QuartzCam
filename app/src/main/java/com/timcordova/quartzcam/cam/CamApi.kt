@@ -26,8 +26,12 @@ import java.time.format.DateTimeFormatter
  *   RTSP rtsp://192.168.169.1:554/streamtype=0       → live view, H.265 video + G.711 (PCMA) audio, RTP over TCP
  *   TCP 192.168.169.1:2222                           → the camera pushes JSON events here ({"msgid":"rec",...}); unused
  *
- * Also seen, not used yet: /app/getdeviceattr (Wi-Fi name, firmware), /app/getparamitems?param=all and
- * /app/getparamvalue?param=all (camera settings), /app/setparamvalue?param=rec|mic&value=0|1, /app/snapshot.
+ *   GET /app/getparamitems?param=all                 → each setting: {"name":"rec_resolution","items":["1080P","2K","4K"],"index":[1080,1440,2144]}
+ *   GET /app/getparamvalue?param=all                 → each setting's current value: {"name":"rec_resolution","value":1440}
+ *   GET /app/getparamvalue?param=rec                 → one setting: {"info":{"value":1}}
+ *   GET /app/setparamvalue?param=<name>&value=<v>    → change a setting (rec = recording on/off, mic, ...)
+ *
+ * Also seen, not used: /app/getdeviceattr (Wi-Fi name, firmware), /app/snapshot (a photo saved on the camera).
  *
  * No login: anyone on the camera's Wi-Fi can use it, so its Wi-Fi password matters.
  */
@@ -38,6 +42,9 @@ data class ProductInfo(val model: String, val company: String, val soc: String, 
 data class SdInfo(val status: Int, val freeMb: Long, val totalMb: Long) {
     val usedMb: Long get() = (totalMb - freeMb).coerceAtLeast(0)
 }
+
+/** One of the camera's settings: the choices it offers ([labels]) and the value sent for each ([values]). */
+data class CamSetting(val name: String, val labels: List<String>, val values: List<Int>)
 
 data class MediaInfo(val rtsp: String, val transport: String, val port: Int)
 
@@ -119,6 +126,35 @@ object CamApi {
         val info = getJson("/app/getmediainfo").ok().optJSONObject("info") ?: return null
         MediaInfo(info.optString("rtsp"), info.optString("transport"), info.optInt("port"))
     }.getOrNull()
+
+    /** Every setting the camera has, with its choices. */
+    fun settingItems(): List<CamSetting> {
+        val arr = getJson("/app/getparamitems?param=all").ok().optJSONArray("info") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val labels = o.optJSONArray("items") ?: return@mapNotNull null
+            val values = o.optJSONArray("index") ?: return@mapNotNull null
+            val n = minOf(labels.length(), values.length())
+            if (n == 0) return@mapNotNull null
+            CamSetting(o.optString("name"), (0 until n).map { labels.optString(it) }, (0 until n).map { values.optInt(it) })
+        }
+    }
+
+    /** The current value of every setting. */
+    fun settingValues(): Map<String, Int> {
+        val arr = getJson("/app/getparamvalue?param=all").ok().optJSONArray("info") ?: return emptyMap()
+        return (0 until arr.length()).mapNotNull { i ->
+            arr.optJSONObject(i)?.let { it.optString("name") to it.optInt("value") }
+        }.toMap()
+    }
+
+    fun settingValue(name: String): Int? = runCatching {
+        getJson("/app/getparamvalue?param=$name", 4000).ok().optJSONObject("info")?.optInt("value")
+    }.getOrNull()
+
+    fun setSetting(name: String, value: Int): Boolean = runCatching {
+        getJson("/app/setparamvalue?param=$name&value=$value").optInt("result", -1) == 0
+    }.getOrDefault(false)
 
     /** Switches the camera to live mode, so its RTSP stream starts sending video. */
     fun enterRecorder(): Boolean = runCatching { getJson("/app/enterrecorder").optInt("result", -1) == 0 }.getOrDefault(false)
