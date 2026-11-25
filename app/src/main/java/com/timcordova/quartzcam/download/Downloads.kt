@@ -173,7 +173,12 @@ object Downloads {
                             // A fresh connection each time, no compression: the camera's little server copes best with that
                             c.setRequestProperty("Connection", "close")
                             c.setRequestProperty("Accept-Encoding", "identity")
-                            if (pieces != false) c.setRequestProperty("Range", "bytes=$done-${done + PIECE - 1}")
+                            if (pieces != false) {
+                                // Never ask past the end of the file: this camera hangs up instead of trimming the range.
+                                // After a failed try, ask for "everything from here on" instead of a fixed piece.
+                                val end = if (exact) minOf(done + PIECE, total) - 1 else done + PIECE - 1
+                                c.setRequestProperty("Range", if (stuck > 0) "bytes=$done-" else "bytes=$done-$end")
+                            }
                             try {
                                 when (val code = c.responseCode) {
                                     206 -> {
@@ -228,7 +233,7 @@ object Downloads {
                                 }
                                 // A piece shorter than asked for, delivered in full, is the end of the file
                                 val got = done - before
-                                if (pieces == true && got in 1 until PIECE && (expected <= 0 || got >= expected)) {
+                                if (pieces == true && !exact && got in 1 until PIECE && (expected <= 0 || got >= expected)) {
                                     total = done
                                     exact = true
                                 }
@@ -247,7 +252,7 @@ object Downloads {
                                 total = done
                                 break
                             }
-                            val reached = if (total > 0) " at ${done * 100 / total}%" else ""
+                            val reached = if (total > 0) " at ${done * 100 / total}% (${sizeText(done / 1024)} of ${sizeText(total / 1024)}, ${"%,d".format(total - done)} bytes left)" else ""
                             val gaveUp = if (pieces == false) wholeTries >= WHOLE_TRIES else stuck >= STUCK_TRIES
                             if (gaveUp) {
                                 val note = if (pieces == false) " (this camera can't resume downloads)" else ""
