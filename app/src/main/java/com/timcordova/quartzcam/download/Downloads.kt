@@ -153,6 +153,8 @@ object Downloads {
         set(f.path) { it.copy(state = JobState.RUNNING, bytes = 0, error = null) }
         var done = 0L
         var total = -1L
+        /** True once the camera has said how big the file is (the file list's size is only close). */
+        var exact = false
         /** Null until the camera's first answer shows whether it can send pieces. */
         var pieces: Boolean? = null
         var stuck = 0
@@ -177,7 +179,10 @@ object Downloads {
                                     206 -> {
                                         pieces = true
                                         // "bytes 0-25165823/912345678": the number after the slash is the whole file
-                                        c.getHeaderField("Content-Range")?.substringAfter('/')?.trim()?.toLongOrNull()?.let { total = it }
+                                        c.getHeaderField("Content-Range")?.substringAfter('/', "")?.trim()?.toLongOrNull()?.let {
+                                            total = it
+                                            exact = true
+                                        }
                                     }
                                     200 -> {
                                         // No pieces: the whole file, from the start
@@ -185,12 +190,22 @@ object Downloads {
                                         wholeTries++
                                         done = 0
                                         out.channel.truncate(0)
-                                        c.contentLengthLong.takeIf { it > 0 }?.let { total = it }
+                                        c.contentLengthLong.takeIf { it > 0 }?.let {
+                                            total = it
+                                            exact = true
+                                        }
                                     }
-                                    416 -> if (total > 0 && done >= total) break else throw IOException("the camera answered 416")
+                                    // Asked past the end: everything's already here
+                                    416 -> if (done > 0) {
+                                        total = done
+                                        break
+                                    } else {
+                                        throw IOException("the camera answered 416")
+                                    }
                                     else -> throw IOException("the camera answered $code")
                                 }
                                 if (total <= 0) total = f.sizeBytes
+                                val expected = c.contentLengthLong
                                 val t = total
                                 set(f.path) { it.copy(total = t) }
                                 out.channel.position(done)
@@ -211,6 +226,12 @@ object Downloads {
                                         }
                                     }
                                 }
+                                // A piece shorter than asked for, delivered in full, is the end of the file
+                                val got = done - before
+                                if (pieces == true && got in 1 until PIECE && (expected <= 0 || got >= expected)) {
+                                    total = done
+                                    exact = true
+                                }
                             } finally {
                                 c.disconnect()
                             }
@@ -219,7 +240,13 @@ object Downloads {
                         } catch (e: IOException) {
                             // Cut off: fine as long as it's still getting somewhere
                             if (done > before && pieces != false) stuck = 0 else stuck++
-                            val reason = e.message ?: e.javaClass.simpleName
+                            val raw = e.message ?: e.javaClass.simpleName
+                            val reason = if ("end of stream on" in raw) "the camera closed the connection" else raw
+                            // Out of pieces right at the size the file list gave: the file was just a little smaller
+                            if (pieces == true && !exact && stuck >= 2 && done >= total * 97 / 100) {
+                                total = done
+                                break
+                            }
                             val reached = if (total > 0) " at ${done * 100 / total}%" else ""
                             val gaveUp = if (pieces == false) wholeTries >= WHOLE_TRIES else stuck >= STUCK_TRIES
                             if (gaveUp) {
